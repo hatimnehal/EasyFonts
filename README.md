@@ -8,6 +8,10 @@ Un'app desktop locale e open source per designer grafici e creativi: prova i fon
 
 **Versione 1.1 · Windows x64 · Licenza MIT**
 
+**[Scarica EasyFonts per Windows](https://github.com/hatimnehal/EasyFonts/releases/latest)**
+
+Dalla pagina della release scarica `EasyFonts.exe` e aprilo con un doppio clic: è portabile e non richiede Node.js. Puoi scaricare anche `sample-fonts-pack.zip` per provarlo subito. L'eseguibile non è firmato digitalmente; il checksum SHA-256 è allegato alla release.
+
 Scarichi una famiglia tipografica, apri uno ZIP pieno di file, cerchi la licenza e installi varianti solo per capire se funzionano nel progetto. EasyFonts riunisce questi passaggi in uno spazio di lavoro: carichi, provi, confronti e installi quello che ti serve.
 
 L'app funziona sul tuo computer, senza account, chiavi API o servizi cloud. I font si provano in memoria: non devi installarli per vederli.
@@ -88,7 +92,7 @@ npm test
 npm run test:desktop
 ```
 
-I test usano font pubblici e dati temporanei, verificando importazione, licenze, persistenza, protezioni e interazioni nella UI reale. Non installano o disinstallano font sul computer. La CI è configurata per eseguire questi controlli su Windows; il primo risultato remoto sarà disponibile dopo la pubblicazione.
+I test usano font pubblici e dati temporanei, verificando importazione, licenze, persistenza, protezioni e interazioni nella UI reale. Non installano o disinstallano font sul computer. La CI è configurata per eseguire questi controlli su Windows. Per questa prima release le verifiche indicate sono state completate in locale; la verifica sul runner GitHub non è ancora stata eseguita.
 
 ## Documentazione e contributi
 
