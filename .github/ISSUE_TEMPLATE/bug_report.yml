@@ -1,0 +1,19 @@
+name: Segnalazione problema
+description: Un problema riproducibile con EasyFonts
+body:
+  - type: markdown
+    attributes:
+      value: "Usa il sample pack pubblico. Non allegare font commerciali, database, log integrali o percorsi personali. Per vulnerabilità segui SECURITY.md."
+  - type: input
+    id: version
+    attributes:
+      label: Versione EasyFonts e sistema operativo
+      placeholder: "1.1.0, Windows 11 x64"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Passaggi, risultato atteso e risultato effettivo
+    validations:
+      required: true
