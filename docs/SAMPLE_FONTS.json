@@ -1,0 +1,34 @@
+{
+  "abel/Abel-Regular.ttf": {
+    "sha256": "8809dcad25318225052f88333e208c5aad4adcb7b2c934c135735ec19aa410b4",
+    "bytes": 35220
+  },
+  "abel/LICENSE.txt": {
+    "sha256": "4f4bc3806a1e55789c6ef75ca5fc628297b05292f74966474dc0d40324abc609",
+    "bytes": 4418
+  },
+  "bangers/Bangers-Regular.ttf": {
+    "sha256": "4160a7311de9342674cce9160cde9fcbb30f48190397d86ff1b70b455af65824",
+    "bytes": 93148
+  },
+  "bangers/LICENSE.txt": {
+    "sha256": "630dd5a307c0657b094d324e069b390edf90182fe5003639e06c02a0e5769af7",
+    "bytes": 4479
+  },
+  "lato/Lato-Bold.ttf": {
+    "sha256": "8a0aace75d33794eece4b28187bfc1df0bbd2888b5d8a56e01788c8d65d16be1",
+    "bytes": 656544
+  },
+  "lato/Lato-Regular.ttf": {
+    "sha256": "d636e4683231f931eda222d588e944d082bfd3bdba02f928bee461c0f185b251",
+    "bytes": 656568
+  },
+  "lato/LICENSE.txt": {
+    "sha256": "74ba064d03f1f1c4a952da936c3eb71866c34404916734de3cae73b34357e59e",
+    "bytes": 4407
+  },
+  "SOURCES.md": {
+    "sha256": "e6d41654e722bf2284955311c984541ce220a689502882fa59501daa30172872",
+    "bytes": 437
+  }
+}

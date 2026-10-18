@@ -1,0 +1,13 @@
+name: Proposta
+description: Un miglioramento per chi lavora con i font
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Quale problema incontri nel lavoro con i font?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Come dovrebbe funzionare?

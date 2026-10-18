@@ -1,0 +1,34 @@
+appId: it.easyfonts.desktop
+productName: EasyFonts
+directories:
+  output: .desktop-build
+files:
+  - dist/**/*
+  - server/**/*
+  - electron/main.mjs
+  - electron/preload.cjs
+  - build/icon.png
+  - package.json
+asar: true
+asarUnpack:
+  - node_modules/wawoff2/**/*
+extraResources:
+  - from: LICENSE
+    to: LICENSE.easyfonts.txt
+  - from: THIRD_PARTY_NOTICES.md
+    to: THIRD_PARTY_NOTICES.md
+  - from: build/THIRD_PARTY_LICENSES.txt
+    to: THIRD_PARTY_LICENSES.txt
+  - from: sample-fonts-pack.zip
+    to: sample-fonts-pack.zip
+win:
+  target:
+    - target: portable
+      arch: [x64]
+  icon: build/icon.ico
+  signExecutable: false
+portable:
+  artifactName: EasyFonts.exe
+compression: store
+npmRebuild: false
+electronDist: node_modules/electron/dist
