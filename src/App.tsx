@@ -14,8 +14,12 @@ import {
   FileText,
   Monitor,
   AlertCircle,
+  Globe,
+  HelpCircle,
+  Star,
+  Sparkles,
 } from "lucide-react";
-import type { FontItem, ImportResult, Result } from "./types";
+import type { FontItem, ImportResult, OnlineFontItem, Result } from "./types";
 import { api, loadFont } from "./api";
 import { Modal } from "./components/Modal";
 import { Preview } from "./components/Preview";
@@ -24,12 +28,13 @@ import { ResizableWorkspace } from "./components/ResizableWorkspace";
 import {
   FontGalleryCard,
   ListViewControls,
-  NativeFontName,
   PreviewViewControls,
 } from "./components/FontAppearance";
 import {
+  defaultTypography,
   defaultViews,
   type RestoredWorkspace,
+  type TypographySettings,
   type ViewPreferences,
 } from "./preferences";
 import { FontList } from "./components/FontList";
@@ -39,6 +44,15 @@ import {
   PreviewTextProvider,
   PreviewTextControls,
 } from "./previewText";
+import { TypographyBar } from "./components/TypographyBar";
+import {
+  WaterfallView,
+  GlyphsInspectorView,
+  PairingView,
+} from "./components/SpecimenViews";
+import { OnboardingModal } from "./components/Onboarding";
+import { OnlineFontsModal } from "./components/OnlineFontsModal";
+
 export default function App() {
   const [previewTextStore] = useState(() => new PreviewTextStore());
   const [fonts, setFonts] = useState<FontItem[]>([]),
@@ -62,10 +76,18 @@ export default function App() {
     [ready, setReady] = useState<Set<string>>(new Set());
   const input = useRef<HTMLInputElement>(null);
   const [views, setViews] = useState<ViewPreferences>(defaultViews);
+  const [typography, setTypography] =
+    useState<TypographySettings>(defaultTypography);
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [onlineStarred, setOnlineStarred] = useState<OnlineFontItem[]>([]);
+  const [defaultFolder, setDefaultFolder] = useState<string | null>(null);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [onlineOpen, setOnlineOpen] = useState(false);
   const [restoring, setRestoring] = useState(true);
   const [currentFolder, setCurrentFolder] = useState("");
   const initialized = useRef(false);
   const active = fonts.find((f) => f.id === activeId) || fonts[0];
+
   useEffect(() => {
     api<RestoredWorkspace>("/restore", {})
       .then((r) => {
@@ -78,9 +100,24 @@ export default function App() {
           ),
         });
         if (p.theme) setTheme(p.theme);
+        if (p.typography) {
+          setTypography((prev) => ({ ...prev, ...p.typography }));
+        }
+        if (Array.isArray(p.favorites)) {
+          setFavorites(new Set(p.favorites));
+        }
+        if (Array.isArray(p.onlineStarred)) {
+          setOnlineStarred(p.onlineStarred);
+        }
+        if (p.defaultFolder !== undefined) {
+          setDefaultFolder(p.defaultFolder || null);
+        }
+        if (!p.onboardingCompleted && !r.fonts.length && !r.folder) {
+          setOnboardingOpen(true);
+        }
         previewTextStore.hydrate(p);
         setMode(r.mode);
-        setCurrentFolder(r.folder || "");
+        setCurrentFolder(r.folder || p.defaultFolder || "");
         if (r.fonts.length) {
           setActiveId(
             r.fonts.some((f) => f.id === p.activeId)
@@ -95,12 +132,14 @@ export default function App() {
       .catch((e) => setNotice(e.message))
       .finally(() => setRestoring(false));
   }, []);
+
   useEffect(() => {
     if (!initialized.current) return;
     void api("/preferences", { ...views, theme, activeId }).catch((e) =>
       setNotice(e.message),
     );
   }, [views, theme, activeId, restoring]);
+
   useEffect(() => {
     if (restoring || !initialized.current) return;
     let timer: ReturnType<typeof setTimeout>;
@@ -117,6 +156,93 @@ export default function App() {
       clearTimeout(timer);
     };
   }, [previewTextStore, restoring]);
+
+  function updateTypography(patch: Partial<TypographySettings>) {
+    setTypography((prev) => {
+      const next = { ...prev, ...patch };
+      if (initialized.current) {
+        void api("/preferences", { typography: next }).catch(() => {});
+      }
+      return next;
+    });
+  }
+
+  function resetTypography() {
+    setTypography(defaultTypography);
+    if (initialized.current) {
+      void api("/preferences", { typography: defaultTypography }).catch(
+        () => {},
+      );
+    }
+  }
+
+  function toggleFavorite(id: string) {
+    setFavorites((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      if (initialized.current) {
+        void api("/preferences", { favorites: [...next] }).catch(() => {});
+      }
+      return next;
+    });
+  }
+
+  function toggleOnlineStar(item: OnlineFontItem) {
+    setOnlineStarred((prev) => {
+      const exists = prev.some((x) => x.id === item.id);
+      const next = exists
+        ? prev.filter((x) => x.id !== item.id)
+        : [...prev, item];
+      if (initialized.current) {
+        void api("/preferences", { onlineStarred: next }).catch(() => {});
+      }
+      return next;
+    });
+  }
+
+  function clearOnlineStars() {
+    setOnlineStarred([]);
+    if (initialized.current) {
+      void api("/preferences", { onlineStarred: [] }).catch(() => {});
+    }
+  }
+
+  function completeOnboarding() {
+    setOnboardingOpen(false);
+    if (initialized.current) {
+      void api("/preferences", { onboardingCompleted: true }).catch(() => {});
+    }
+  }
+
+  function chooseDefaultFolder() {
+    if (busy) return;
+    void task("Selezione della cartella di lavoro predefinita…", async () => {
+      const res = await api<{
+        cancelled?: boolean;
+        folder: string | null;
+        ok?: boolean;
+      }>("/default-folder", { choose: true });
+      if (res.cancelled || !res.folder) return;
+      setDefaultFolder(res.folder);
+      setCurrentFolder(res.folder);
+      const restored = await api<RestoredWorkspace>("/restore", {});
+      setFonts(restored.fonts);
+      if (restored.fonts.length) {
+        setActiveId(restored.fonts[0].id);
+      }
+      setNotice(`Cartella di lavoro predefinita impostata: ${res.folder}`);
+    });
+  }
+
+  function clearDefaultFolder() {
+    if (busy) return;
+    void task("Rimozione cartella predefinita…", async () => {
+      await api("/default-folder", { folder: null });
+      setDefaultFolder(null);
+      setNotice("Cartella di lavoro predefinita rimossa.");
+    });
+  }
+
   const selectedFonts = fonts.filter((f) => selected.has(f.id));
   const families = useMemo(() => groupFonts(fonts), [fonts]);
   const familyMap = useMemo(
@@ -133,10 +259,12 @@ export default function App() {
     : fonts;
   const requested = full === "fonts" ? selectedFonts : active ? [active] : [];
   const requestedIds = requested.map((f) => f.id).join(",");
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("ef-theme", theme);
   }, [theme]);
+
   useEffect(() => {
     let cancelled = false;
     for (const f of requested)
@@ -154,6 +282,7 @@ export default function App() {
       cancelled = true;
     };
   }, [requestedIds]);
+
   async function task(label: string, fn: () => Promise<void>) {
     setBusy(label);
     setNotice("");
@@ -165,6 +294,7 @@ export default function App() {
       setBusy("");
     }
   }
+
   function accept(r: ImportResult, nextMode: "library" | "system") {
     if (r.cancelled) return;
     if (!r.fonts.length && !r.folder && nextMode !== "system") {
@@ -175,40 +305,72 @@ export default function App() {
     setActiveId(r.fonts[0]?.id || "");
     setSelected(new Set());
     setMode(nextMode);
-    setCurrentFolder(r.folder || "");
+    setCurrentFolder(r.folder || defaultFolder || "");
+    setOnboardingOpen(false);
     setScreen("workspace");
     if (r.warnings.length)
       setNotice(
         `${r.warnings.length} avvisi\n${r.warnings.slice(0, 12).join("\n")}`,
       );
   }
+
   function importFiles(files: File[]) {
     if (!files.length || busy) return;
+    setOnboardingOpen(false);
     void task("Estrazione e lettura dei font…", async () => {
-      const body = new FormData();
-      files.forEach((f) => body.append("files", f));
-      accept(await api<ImportResult>("/import", body), "library");
+      if (files.length <= 40) {
+        const body = new FormData();
+        files.forEach((f) => body.append("files", f));
+        accept(await api<ImportResult>("/import", body), "library");
+      } else {
+        const { uploadId } = await api<{ uploadId: string }>("/upload/init", {
+          totalFiles: files.length,
+        });
+        const CHUNK_SIZE = 30;
+        let lastResult: ImportResult | null = null;
+        for (let i = 0; i < files.length; i += CHUNK_SIZE) {
+          const chunk = files.slice(i, i + CHUNK_SIZE);
+          const isLast = i + CHUNK_SIZE >= files.length;
+          const body = new FormData();
+          body.append("uploadId", uploadId);
+          body.append("isLast", String(isLast));
+          chunk.forEach((f) => body.append("files", f));
+          const res = await api<ImportResult & { done: boolean }>(
+            "/upload/chunk",
+            body,
+          );
+          if (res.done) lastResult = res;
+        }
+        if (lastResult) accept(lastResult, "library");
+      }
     });
   }
+
   function folder() {
+    setOnboardingOpen(false);
     void task("Scegli la cartella nella finestra di sistema…", async () =>
       accept(await api<ImportResult>("/folder", {}), "library"),
     );
   }
+
   function chooseUpload() {
     if (busy) return;
+    setOnboardingOpen(false);
     if (window.easyfonts?.desktop) {
       void task("Scegli i file da caricare…", async () =>
         accept(await api<ImportResult>("/import-native", {}), "library"),
       );
     } else input.current?.click();
   }
+
   function system() {
     setMenu(false);
+    setOnboardingOpen(false);
     void task("Lettura dei font del computer…", async () =>
       accept(await api<ImportResult>("/system", {}), "system"),
     );
   }
+
   function toggle(id: string) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -216,6 +378,7 @@ export default function App() {
       return next;
     });
   }
+
   function install(all = false) {
     const items = all ? fonts : selectedFonts;
     if (!items.length || busy) return;
@@ -233,6 +396,7 @@ export default function App() {
       );
     });
   }
+
   function remove() {
     setDeleteOpen(false);
     void task("Rimozione dei font…", async () => {
@@ -254,6 +418,7 @@ export default function App() {
       );
     });
   }
+
   useEffect(() => {
     function key(e: KeyboardEvent) {
       if (
@@ -264,6 +429,8 @@ export default function App() {
         busy ||
         licenses ||
         deleteOpen ||
+        onboardingOpen ||
+        onlineOpen ||
         menu ||
         screen !== "workspace"
       )
@@ -309,9 +476,11 @@ export default function App() {
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   });
+
   useEffect(() => {
     if (full === "fonts" && selectedFonts.length < 2) setFull("positive");
   }, [selectedFonts.length, full]);
+
   // Keep the font list stable while preview text changes, even with large libraries.
   const sidebar = useMemo(
     () => (
@@ -325,14 +494,26 @@ export default function App() {
               Font<span>{fonts.length.toString().padStart(2, "0")}</span>
             </h2>
           </div>
-          <button
-            className="icon-button"
-            aria-label="Importa altri font"
-            onClick={() => setScreen("ingest")}
-            disabled={!!busy}
-          >
-            <Plus size={18} />
-          </button>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              className="icon-button"
+              aria-label="Esplora font gratis online"
+              title="Cerca font gratis online (DaFont, Google Fonts, Fontshare)"
+              onClick={() => setOnlineOpen(true)}
+              disabled={!!busy}
+            >
+              <Globe size={17} />
+            </button>
+            <button
+              className="icon-button"
+              aria-label="Importa altri font"
+              title="Torna all'ingresso o carica altri font"
+              onClick={() => setScreen("ingest")}
+              disabled={!!busy}
+            >
+              <Plus size={18} />
+            </button>
+          </div>
         </div>
         <ListViewControls
           view={views.listView}
@@ -358,6 +539,8 @@ export default function App() {
           view={views.listView}
           nativeNames={views.nativeNames}
           groupFamilies={views.groupFamilies}
+          favorites={favorites}
+          onToggleFavorite={toggleFavorite}
           onActivate={setActiveId}
           onToggle={toggle}
           onToggleFamily={(ids) =>
@@ -414,8 +597,10 @@ export default function App() {
       views.listView,
       views.nativeNames,
       views.groupFamilies,
+      favorites,
     ],
   );
+
   return (
     <PreviewTextProvider store={previewTextStore}>
       <div
@@ -463,7 +648,7 @@ export default function App() {
                 src="/assets/easyfonts-logo.png"
                 alt="EasyFonts"
               />
-              <span>1.1</span>
+              <span>2.0</span>
             </button>
           ) : (
             <div className="wordmark">
@@ -472,7 +657,7 @@ export default function App() {
                 src="/assets/easyfonts-logo.png"
                 alt="EasyFonts"
               />
-              <span>1.1</span>
+              <span>2.0</span>
             </div>
           )}
           <div className="header-right">
@@ -483,63 +668,117 @@ export default function App() {
               </span>
             )}
             {screen === "workspace" && (
-              <div className="menu-container">
+              <>
                 <button
-                  aria-label="Menu impostazioni"
-                  aria-expanded={menu}
-                  className={`settings-button ${menu ? "open" : ""}`}
-                  onClick={() => setMenu(!menu)}
+                  type="button"
+                  className="online-header-btn"
+                  onClick={() => setOnlineOpen(true)}
+                  disabled={!!busy}
+                  aria-label="Cerca font gratis online"
                 >
-                  <span />
+                  <Globe size={13} />
+                  <span>Font Online</span>
+                  {onlineStarred.length > 0 && (
+                    <strong className="star-pill">
+                      ★ {onlineStarred.length}
+                    </strong>
+                  )}
                 </button>
-                {menu && (
-                  <>
-                    <button
-                      className="menu-dismiss"
-                      aria-label="Chiudi menu"
-                      onClick={() => setMenu(false)}
-                    />
-                    <motion.div
-                      className="settings-menu"
-                      initial={{ opacity: 0, y: -5 }}
-                      animate={{ opacity: 1, y: 0 }}
-                    >
-                      <p>IMPOSTAZIONI</p>
+                <div className="menu-container">
+                  <button
+                    aria-label="Menu impostazioni"
+                    aria-expanded={menu}
+                    className={`settings-button ${menu ? "open" : ""}`}
+                    onClick={() => setMenu(!menu)}
+                  >
+                    <span />
+                  </button>
+                  {menu && (
+                    <>
                       <button
-                        onClick={() => {
-                          setMenu(false);
-                          setLicenses(true);
-                        }}
+                        className="menu-dismiss"
+                        aria-label="Chiudi menu"
+                        onClick={() => setMenu(false)}
+                      />
+                      <motion.div
+                        className="settings-menu"
+                        initial={{ opacity: 0, y: -5 }}
+                        animate={{ opacity: 1, y: 0 }}
                       >
-                        <FileText size={17} />
-                        Gestione licenze
-                        <ArrowRight size={14} />
-                      </button>
-                      <button
-                        onClick={() => {
-                          setTheme(theme === "light" ? "dark" : "light");
-                          setMenu(false);
-                        }}
-                      >
-                        {theme === "light" ? (
-                          <Moon size={17} />
-                        ) : (
-                          <Sun size={17} />
-                        )}
-                        Tema B/W
-                        <span className="menu-value">
-                          {theme === "light" ? "Nero" : "Bianco"}
-                        </span>
-                      </button>
-                      <button onClick={system} disabled={!!busy}>
-                        <Monitor size={17} />
-                        Tutti i font del PC
-                        <ArrowRight size={14} />
-                      </button>
-                    </motion.div>
-                  </>
-                )}
-              </div>
+                        <p>IMPOSTAZIONI</p>
+                        <button
+                          onClick={() => {
+                            setMenu(false);
+                            setOnlineOpen(true);
+                          }}
+                        >
+                          <Globe size={17} />
+                          Esplora Font Online
+                          <span className="menu-value">
+                            {onlineStarred.length
+                              ? `★ ${onlineStarred.length}`
+                              : "DaFont · Google"}
+                          </span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setMenu(false);
+                            setLicenses(true);
+                          }}
+                        >
+                          <FileText size={17} />
+                          Gestione licenze
+                          <ArrowRight size={14} />
+                        </button>
+                        <button
+                          onClick={() => {
+                            setMenu(false);
+                            chooseDefaultFolder();
+                          }}
+                          disabled={!!busy}
+                        >
+                          <FolderOpen size={17} />
+                          Cartella predefinita
+                          <span className="menu-value">
+                            {defaultFolder ? "Attiva" : "Scegli"}
+                          </span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setTheme(theme === "light" ? "dark" : "light");
+                            setMenu(false);
+                          }}
+                        >
+                          {theme === "light" ? (
+                            <Moon size={17} />
+                          ) : (
+                            <Sun size={17} />
+                          )}
+                          Tema B/W
+                          <span className="menu-value">
+                            {theme === "light" ? "Nero" : "Bianco"}
+                          </span>
+                        </button>
+                        <button onClick={system} disabled={!!busy}>
+                          <Monitor size={17} />
+                          Tutti i font del PC
+                          <ArrowRight size={14} />
+                        </button>
+                        <button
+                          onClick={() => {
+                            setMenu(false);
+                            setOnboardingOpen(true);
+                          }}
+                        >
+                          <HelpCircle size={17} />
+                          Guida & Introduzione
+                          <ArrowRight size={14} />
+                        </button>
+                      </motion.div>
+                    </>
+                  )}
+                </div>
+              </>
             )}
           </div>
         </header>
@@ -563,6 +802,53 @@ export default function App() {
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.25 }}
             >
+              <div className="ingest-v2-banner">
+                <div className="ingest-v2-info">
+                  <Sparkles size={15} />
+                  <span>
+                    {defaultFolder ? (
+                      <>
+                        Cartella di lavoro predefinita:{" "}
+                        <strong>{defaultFolder}</strong>
+                      </>
+                    ) : (
+                      "Configura una cartella di lavoro predefinita o esplora font gratuiti online."
+                    )}
+                  </span>
+                </div>
+                <div className="ingest-v2-actions">
+                  <button
+                    type="button"
+                    onClick={chooseDefaultFolder}
+                    disabled={!!busy}
+                  >
+                    <FolderOpen size={13} />
+                    <span>
+                      {defaultFolder ? "Cambia cartella default" : "Imposta cartella default"}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOnlineOpen(true)}
+                    disabled={!!busy}
+                  >
+                    <Globe size={13} />
+                    <span>
+                      Cerca Font Online (DaFont · Google · Fontshare)
+                      {onlineStarred.length > 0
+                        ? ` · ★ ${onlineStarred.length}`
+                        : ""}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOnboardingOpen(true)}
+                  >
+                    <HelpCircle size={13} />
+                    <span>Come funziona</span>
+                  </button>
+                </div>
+              </div>
               <div className="ingest-tiles">
                 <motion.button
                   whileTap={{ scale: 0.988 }}
@@ -594,22 +880,32 @@ export default function App() {
                   />
                   <h2>UPLOAD</h2>
                   <span>Trascina qui i file o clicca per caricarli</span>
-                  <small>ZIP · TTF · OTF · WOFF · WOFF2</small>
+                  <small>ZIP · TTF · OTF · WOFF · WOFF2 · SENZA LIMITI</small>
                 </motion.button>
               </div>
               <div className="ingest-footer">
                 <span>Tutto in locale. Il tuo spazio, i tuoi font.</span>
-                {fonts.length > 0 ? (
-                  <button onClick={() => setScreen("workspace")}>
-                    Torna al workspace
-                    <ArrowRight size={14} />
+                <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
+                  <button
+                    type="button"
+                    disabled={!!busy}
+                    onClick={() => setOnlineOpen(true)}
+                  >
+                    <Star size={13} />
+                    Esplora Font Gratis Online
                   </button>
-                ) : (
-                  <button disabled={!!busy} onClick={system}>
-                    Tutti i font del PC
-                    <ArrowRight size={14} />
-                  </button>
-                )}
+                  {fonts.length > 0 ? (
+                    <button onClick={() => setScreen("workspace")}>
+                      Torna al workspace
+                      <ArrowRight size={14} />
+                    </button>
+                  ) : (
+                    <button disabled={!!busy} onClick={system}>
+                      Tutti i font del PC
+                      <ArrowRight size={14} />
+                    </button>
+                  )}
+                </div>
               </div>
             </motion.main>
           ) : (
@@ -624,7 +920,17 @@ export default function App() {
               <div className="preview-area">
                 <div className="workspace-caption">
                   <div>
-                    <h1>{active?.family || "Il tuo workspace"}</h1>
+                    <div className="workspace-title-row">
+                      <h1>{active?.family || "Il tuo workspace"}</h1>
+                      {active?.metrics?.format && (
+                        <span className="format-badge">
+                          {active.metrics.format}
+                          {active.metrics.numGlyphs
+                            ? ` · ${active.metrics.numGlyphs} glifi`
+                            : ""}
+                        </span>
+                      )}
+                    </div>
                     <span>
                       {currentFolder ||
                         (mode === "system"
@@ -634,6 +940,18 @@ export default function App() {
                     </span>
                   </div>
                   <div className="preview-controls">
+                    {selectedFonts.length >= 2 && (
+                      <button
+                        type="button"
+                        className="edit-all-toggle"
+                        onClick={() => {
+                          setSize(88);
+                          setFull("fonts");
+                        }}
+                      >
+                        <span>Confronta ({selectedFonts.length})</span>
+                      </button>
+                    )}
                     <PreviewTextControls />
                     <PreviewViewControls
                       view={views.previewLayout}
@@ -643,6 +961,16 @@ export default function App() {
                     />
                   </div>
                 </div>
+                <TypographyBar
+                  font={active}
+                  typography={typography}
+                  onChange={updateTypography}
+                  onReset={resetTypography}
+                  onApplyPreset={(_preset, text) =>
+                    previewTextStore.applyPreset(text, active)
+                  }
+                  onNotice={setNotice}
+                />
                 {views.previewLayout === "gallery" ? (
                   <div
                     className="preview-gallery"
@@ -654,6 +982,7 @@ export default function App() {
                         font={f}
                         active={active?.id === f.id}
                         variants={familyMap.get(familyKey(f)) || [f]}
+                        typography={typography}
                         onActivate={(font) => setActiveId(font.id)}
                         onExpand={(font, negative) => {
                           setActiveId(font.id);
@@ -666,6 +995,35 @@ export default function App() {
                       <p className="empty">Nessun font nella cartella.</p>
                     )}
                   </div>
+                ) : views.previewLayout === "waterfall" ? (
+                  <div className="specialist-view-scroll">
+                    <WaterfallView
+                      font={active}
+                      ready={!!active && ready.has(active.id)}
+                      typography={typography}
+                    />
+                  </div>
+                ) : views.previewLayout === "glyphs" ? (
+                  <div className="specialist-view-scroll">
+                    <GlyphsInspectorView
+                      font={active}
+                      ready={!!active && ready.has(active.id)}
+                      onInsertGlyph={(ch) =>
+                        previewTextStore.appendGlyph(ch, active)
+                      }
+                      onNotice={setNotice}
+                    />
+                  </div>
+                ) : views.previewLayout === "pairing" ? (
+                  <div className="specialist-view-scroll">
+                    <PairingView
+                      font={active}
+                      fonts={fonts}
+                      ready={!!active && ready.has(active.id)}
+                      typography={typography}
+                      onTypographyChange={updateTypography}
+                    />
+                  </div>
                 ) : (
                   <div
                     className={`preview-stack preview-layout-${views.previewLayout}`}
@@ -675,6 +1033,8 @@ export default function App() {
                       variants={activeVariants}
                       onVariantChange={setActiveId}
                       ready={!!active && ready.has(active.id)}
+                      size={typography.fontSize}
+                      typography={typography}
                       onExpand={() => {
                         setSize(88);
                         setFull("positive");
@@ -685,6 +1045,8 @@ export default function App() {
                       variants={activeVariants}
                       onVariantChange={setActiveId}
                       ready={!!active && ready.has(active.id)}
+                      size={typography.fontSize}
+                      typography={typography}
                       negative
                       onExpand={() => {
                         setSize(88);
@@ -694,7 +1056,9 @@ export default function App() {
                   </div>
                 )}
                 <footer className="workspace-footer">
-                  <span>↑ ↓ per esplorare i font</span>
+                  <span>
+                    ↑ ↓ per esplorare i font · Clicca sul testo per modificarlo
+                  </span>
                   <span>
                     Anteprima in memoria · Nessuna installazione necessaria
                   </span>
@@ -713,7 +1077,7 @@ export default function App() {
             >
               <ArrowUp size={64} />
               <h2>Lascia spazio ai tuoi font.</h2>
-              <p>Rilascia i file per importarli</p>
+              <p>Rilascia i file per importarli senza limiti</p>
             </motion.div>
           )}
         </AnimatePresence>
@@ -744,6 +1108,47 @@ export default function App() {
               onClose={() => setLicenses(false)}
               views={views}
               onViewsChange={setViews}
+            />
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {onboardingOpen && (
+            <OnboardingModal
+              open={onboardingOpen}
+              defaultFolder={defaultFolder}
+              busy={!!busy}
+              onChooseDefaultFolder={chooseDefaultFolder}
+              onClearDefaultFolder={clearDefaultFolder}
+              onOpenOnlineFonts={() => setOnlineOpen(true)}
+              onComplete={completeOnboarding}
+            />
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {onlineOpen && (
+            <OnlineFontsModal
+              open={onlineOpen}
+              onClose={() => setOnlineOpen(false)}
+              starred={onlineStarred}
+              onToggleStar={toggleOnlineStar}
+              onClearStars={clearOnlineStars}
+              defaultFolder={defaultFolder}
+              onImported={(res) => {
+                setFonts(res.fonts);
+                if (res.added.length) {
+                  setActiveId(res.added[0].id);
+                } else if (res.fonts.length && !activeId) {
+                  setActiveId(res.fonts[0].id);
+                }
+                setMode("library");
+                setOnlineOpen(false);
+                setScreen("workspace");
+                setNotice(
+                  `${res.added.length} font scaricati e pronti nel workspace.${
+                    defaultFolder ? ` Salvati anche in ${defaultFolder}.` : ""
+                  }${res.warnings.length ? "\n" + res.warnings.slice(0, 5).join("\n") : ""}`,
+                );
+              }}
             />
           )}
         </AnimatePresence>
@@ -875,6 +1280,7 @@ export default function App() {
                       variants={familyMap.get(familyKey(f)) || [f]}
                       size={size}
                       expanded
+                      typography={typography}
                       active={active?.id === f.id}
                       onActivate={(font) => setActiveId(font.id)}
                     />
@@ -888,6 +1294,7 @@ export default function App() {
                         onVariantChange={setActiveId}
                         ready={!!active && ready.has(active.id)}
                         size={size}
+                        typography={typography}
                         expanded
                       />
                     )}
@@ -898,6 +1305,7 @@ export default function App() {
                         onVariantChange={setActiveId}
                         ready={!!active && ready.has(active.id)}
                         size={size}
+                        typography={typography}
                         negative
                         expanded
                       />

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, Lock, Minus } from "lucide-react";
+import { Check, ChevronDown, Lock, Minus, Search, Star, X } from "lucide-react";
 import type { FontItem } from "../types";
 import { familyKey, groupFonts } from "../families";
 import type { ListView } from "../preferences";
@@ -40,6 +40,7 @@ function Selection({
     </label>
   );
 }
+
 export function FontList({
   fonts,
   activeId,
@@ -55,6 +56,8 @@ export function FontList({
   onImport,
   onExpand,
   showSelection = true,
+  favorites,
+  onToggleFavorite,
 }: {
   fonts: FontItem[];
   activeId: string;
@@ -70,19 +73,45 @@ export function FontList({
   onImport: () => void;
   onExpand?: (font: FontItem, negative: boolean) => void;
   showSelection?: boolean;
+  favorites?: Set<string>;
+  onToggleFavorite?: (id: string) => void;
 }) {
-  const families = useMemo(() => groupFonts(fonts), [fonts]),
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "fav" | "installed" | "commercial">("all");
+
+  const filteredFonts = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return fonts.filter((f) => {
+      if (filter === "fav" && !favorites?.has(f.id)) return false;
+      if (filter === "installed" && !f.installed) return false;
+      if (filter === "commercial" && f.category !== "commercial") return false;
+      if (!q) return true;
+      return (
+        f.name.toLowerCase().includes(q) ||
+        f.family.toLowerCase().includes(q) ||
+        f.style.toLowerCase().includes(q) ||
+        f.filename.toLowerCase().includes(q) ||
+        (f.metrics?.designer || "").toLowerCase().includes(q) ||
+        (f.metrics?.manufacturer || "").toLowerCase().includes(q)
+      );
+    });
+  }, [fonts, query, filter, favorites]);
+
+  const families = useMemo(() => groupFonts(filteredFonts), [filteredFonts]),
     familyMap = useMemo(
       () => new Map(families.map((f) => [f.key, f.fonts])),
       [families],
     );
   const root = useRef<HTMLDivElement>(null),
     [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const eligible = fonts.filter((f) => !(mode === "system" && f.protected)),
+  const eligible = filteredFonts.filter(
+      (f) => !(mode === "system" && f.protected),
+    ),
     count = eligible.filter((f) => selected.has(f.id)).length,
     all = !!eligible.length && count === eligible.length;
+
   useEffect(() => {
-    const font = fonts.find((f) => f.id === activeId);
+    const font = filteredFonts.find((f) => f.id === activeId);
     if (groupFamilies && font) {
       const key = familyKey(font);
       setExpanded((prev) => (prev.has(key) ? prev : new Set([...prev, key])));
@@ -93,7 +122,8 @@ export function FontList({
       );
       return () => cancelAnimationFrame(frame);
     }
-  }, [activeId, groupFamilies, fonts]);
+  }, [activeId, groupFamilies, filteredFonts]);
+
   function checkbox(f: FontItem) {
     return showSelection ? (
       <Selection
@@ -104,6 +134,27 @@ export function FontList({
       />
     ) : null;
   }
+
+  function favoriteButton(f: FontItem) {
+    if (!onToggleFavorite) return null;
+    const isFav = !!favorites?.has(f.id);
+    return (
+      <button
+        type="button"
+        className={`fav-button ${isFav ? "is-fav" : ""}`}
+        aria-label={`Preferito ${f.name}`}
+        aria-pressed={isFav}
+        title={isFav ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleFavorite(f.id);
+        }}
+      >
+        <Star size={13} fill={isFav ? "currentColor" : "none"} />
+      </button>
+    );
+  }
+
   function toggleFamily(key: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -111,6 +162,7 @@ export function FontList({
       return next;
     });
   }
+
   function row(f: FontItem, variant = false) {
     return (
       <div
@@ -133,14 +185,17 @@ export function FontList({
           <small>
             {variant ? f.filename : f.style}
             {f.installed ? " · Installato" : ""}
+            {f.category === "commercial" ? " · OFL/Comm." : ""}
           </small>
         </button>
+        {favoriteButton(f)}
         {mode === "system" && f.protected && (
           <Lock size={13} className="lock" aria-label="Font protetto" />
         )}
       </div>
     );
   }
+
   function card(
     f: FontItem,
     variants: FontItem[],
@@ -162,13 +217,73 @@ export function FontList({
           showNegative={false}
           size={29}
           nativeNames={nativeNames}
-          extraControls={controls || checkbox}
+          extraControls={
+            controls ||
+            ((font) => (
+              <>
+                {checkbox(font)}
+                {favoriteButton(font)}
+              </>
+            ))
+          }
         />
       </div>
     );
   }
+
+  const favCount = useMemo(
+    () => (favorites ? fonts.filter((f) => favorites.has(f.id)).length : 0),
+    [fonts, favorites],
+  );
+
   return (
     <>
+      {showSelection && (
+        <div className="sidebar-search-zone">
+          <label className="sidebar-search">
+            <Search size={13} />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Cerca font o famiglia…"
+              aria-label="Cerca nella lista font"
+            />
+            {query && (
+              <button
+                type="button"
+                className="clear-search"
+                aria-label="Pulisci ricerca"
+                onClick={() => setQuery("")}
+              >
+                <X size={12} />
+              </button>
+            )}
+          </label>
+          <div className="sidebar-filter-pills" role="group" aria-label="Filtra lista font">
+            {(
+              [
+                { id: "all", label: "Tutti" },
+                {
+                  id: "fav",
+                  label: favCount ? `★ ${favCount}` : "★ Preferiti",
+                },
+                { id: "installed", label: "Installati" },
+                { id: "commercial", label: "Comm." },
+              ] as const
+            ).map((pill) => (
+              <button
+                key={pill.id}
+                type="button"
+                aria-pressed={filter === pill.id}
+                onClick={() => setFilter(pill.id)}
+              >
+                {pill.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {showSelection && (
         <div className="select-all-row">
           <Selection
@@ -215,6 +330,7 @@ export function FontList({
                       }
                     />
                   )}
+                  {favoriteButton(current)}
                   <button
                     className="family-expand"
                     aria-label={`${open ? "Comprimi" : "Espandi"} famiglia ${family.name}`}
@@ -261,6 +377,7 @@ export function FontList({
                           {family.fonts.length} varianti · {current.style}
                         </small>
                       </button>
+                      {favoriteButton(current)}
                       <button
                         className="family-expand"
                         aria-label={`${open ? "Comprimi" : "Espandi"} famiglia ${family.name}`}
@@ -279,15 +396,31 @@ export function FontList({
                 </section>
               );
             })
-          : fonts.map((f) =>
+          : filteredFonts.map((f) =>
               view === "grid"
                 ? card(f, familyMap.get(familyKey(f)) || [f])
                 : row(f),
             )}
-        {!fonts.length && (
+        {!filteredFonts.length && (
           <div className="empty">
-            Nessun font nella lista.
-            <button onClick={onImport}>Carica dei font →</button>
+            {fonts.length > 0 ? (
+              <>
+                Nessun font corrisponde ai filtri.
+                <button
+                  onClick={() => {
+                    setQuery("");
+                    setFilter("all");
+                  }}
+                >
+                  Mostra tutti →
+                </button>
+              </>
+            ) : (
+              <>
+                Nessun font nella lista.
+                <button onClick={onImport}>Carica dei font →</button>
+              </>
+            )}
           </div>
         )}
       </div>

@@ -1,16 +1,19 @@
 import { memo, useEffect, useRef, useState } from "react";
 import {
   AlignJustify,
+  BookOpen,
   Columns2,
+  Grid3x3,
+  Layers,
   LayoutGrid,
   List,
   Rows2,
+  SlidersVertical,
   Type,
-  Layers,
 } from "lucide-react";
 import { loadFont } from "../api";
 import type { FontItem } from "../types";
-import type { ListView, PreviewLayout } from "../preferences";
+import type { ListView, PreviewLayout, TypographySettings } from "../preferences";
 import { Preview } from "./Preview";
 
 function useVisibleFont<T extends HTMLElement>(font: FontItem, enabled = true) {
@@ -146,6 +149,21 @@ export function PreviewViewControls({
             label: "Griglia di tutti i font",
             Icon: LayoutGrid,
           },
+          {
+            value: "waterfall",
+            label: "Scala tipografica (Waterfall)",
+            Icon: SlidersVertical,
+          },
+          {
+            value: "glyphs",
+            label: "Mappa glifi e specifiche",
+            Icon: Grid3x3,
+          },
+          {
+            value: "pairing",
+            label: "Accoppiamento font (Pairing)",
+            Icon: BookOpen,
+          },
         ] as const
       ).map(({ value, label, Icon }) => (
         <button
@@ -173,6 +191,7 @@ export const FontGalleryCard = memo(function FontGalleryCard({
   showNegative = true,
   extraControls,
   nativeNames = false,
+  typography,
 }: {
   font: FontItem;
   active: boolean;
@@ -183,8 +202,10 @@ export const FontGalleryCard = memo(function FontGalleryCard({
   expanded?: boolean;
   showNegative?: boolean;
   extraControls?:
-    import("react").ReactNode | ((font: FontItem) => import("react").ReactNode);
+    | import("react").ReactNode
+    | ((font: FontItem) => import("react").ReactNode);
   nativeNames?: boolean;
+  typography?: TypographySettings;
 }) {
   const [variantId, setVariantId] = useState(font.id);
   useEffect(() => setVariantId(font.id), [font.id]);
@@ -210,6 +231,7 @@ export const FontGalleryCard = memo(function FontGalleryCard({
               ready={ready}
               size={size}
               expanded={expanded}
+              typography={typography}
               onExpand={onExpand ? () => onExpand(current, false) : undefined}
             />
             {showNegative && (
@@ -219,6 +241,7 @@ export const FontGalleryCard = memo(function FontGalleryCard({
                 size={size}
                 negative
                 expanded={expanded}
+                typography={typography}
                 onExpand={onExpand ? () => onExpand(current, true) : undefined}
               />
             )}

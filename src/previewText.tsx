@@ -47,6 +47,32 @@ export class PreviewTextStore {
     else this.drafts[`${font.id}:${negative ? "negative" : "positive"}`] = text;
     this.emit();
   }
+  applyPreset(text: string, font?: FontItem) {
+    if (this.all) {
+      this.shared = text;
+    } else if (font) {
+      if (text === font.name) {
+        delete this.drafts[`${font.id}:positive`];
+        delete this.drafts[`${font.id}:negative`];
+      } else {
+        this.drafts[`${font.id}:positive`] = text;
+        this.drafts[`${font.id}:negative`] = text;
+      }
+    }
+    this.emit();
+  }
+  appendGlyph(glyph: string, font?: FontItem) {
+    if (!font) return;
+    if (this.all) {
+      this.shared = (this.shared ?? font.name) + glyph;
+    } else {
+      const pos = this.drafts[`${font.id}:positive`] ?? font.name;
+      const neg = this.drafts[`${font.id}:negative`] ?? font.name;
+      this.drafts[`${font.id}:positive`] = pos + glyph;
+      this.drafts[`${font.id}:negative`] = neg + glyph;
+    }
+    this.emit();
+  }
   hydrate(saved: SavedText) {
     this.all = saved.editAllPreviews ?? false;
     this.shared = saved.globalPreviewText ?? null;
@@ -79,20 +105,20 @@ export function PreviewTextProvider({
 }) {
   return <Context.Provider value={store}>{children}</Context.Provider>;
 }
-function useStore() {
+export function usePreviewTextStore() {
   const store = useContext(Context);
   if (!store) throw Error("PreviewTextProvider mancante");
   return store;
 }
 export function useSpecimenText(font: FontItem | undefined, negative: boolean) {
-  const store = useStore();
+  const store = usePreviewTextStore();
   const text = useSyncExternalStore(store.subscribe, () =>
     store.textFor(font, negative),
   );
   return { text, setText: (text: string) => store.edit(font, negative, text) };
 }
 export function PreviewTextControls() {
-  const store = useStore(),
+  const store = usePreviewTextStore(),
     all = useSyncExternalStore(store.subscribe, store.editingAll);
   return (
     <button

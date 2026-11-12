@@ -51,7 +51,46 @@ export async function createWorkspaceStore(directory) {
           result[key] = value;
         else if (
           key === "previewLayout" &&
-          ["stacked", "columns", "gallery"].includes(value)
+          [
+            "stacked",
+            "columns",
+            "gallery",
+            "waterfall",
+            "glyphs",
+            "pairing",
+          ].includes(value)
+        )
+          result[key] = value;
+        else if (
+          key === "favorites" &&
+          Array.isArray(value) &&
+          value.length <= 5000 &&
+          value.every((id) => typeof id === "string" && id.length <= 128)
+        )
+          result[key] = [...new Set(value)];
+        else if (
+          key === "defaultFolder" &&
+          (value === null ||
+            (typeof value === "string" && value.length <= 1024))
+        )
+          result[key] = value === "" ? null : value;
+        else if (
+          key === "onboardingCompleted" &&
+          typeof value === "boolean"
+        )
+          result[key] = value;
+        else if (
+          key === "onlineStarred" &&
+          Array.isArray(value) &&
+          JSON.stringify(value).length <= 500000
+        )
+          result[key] = value;
+        else if (
+          key === "typography" &&
+          value &&
+          typeof value === "object" &&
+          !Array.isArray(value) &&
+          JSON.stringify(value).length <= 50000
         )
           result[key] = value;
         else if (

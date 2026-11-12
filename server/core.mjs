@@ -35,16 +35,28 @@ export function licenseCategory(text) {
     return "commercial";
   return "unknown";
 }
-const english = (entry) => entry?.en || Object.values(entry || {})[0] || "";
+const english = (entry) =>
+  typeof entry === "string"
+    ? entry
+    : entry?.en || Object.values(entry || {})[0] || "";
+
+const standardAxisNames = {
+  wght: "Weight",
+  wdth: "Width",
+  ital: "Italic",
+  slnt: "Slant",
+  opsz: "Optical Size",
+};
+
 export async function parseFont(buffer, filename) {
   let data = buffer;
-  if (path.extname(filename).toLowerCase() === ".woff2")
+  if (path.extname(filename || "").toLowerCase() === ".woff2")
     data = Buffer.from(await wawoff2.decompress(buffer));
   const font = opentype.parse(
     data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
   );
   const legacyFamily =
-    english(font.names.fontFamily) || path.parse(filename).name;
+    english(font.names.fontFamily) || path.parse(filename || "").name;
   const preferredFamily =
     english(font.names.preferredFamily) || english(font.names.wwsFamily);
   const suffix =
@@ -74,7 +86,104 @@ export async function parseFont(buffer, filename) {
   ]
     .filter(Boolean)
     .join("\n\n");
-  return { name, family, groupFamily: family, style, metadata, font };
+
+  // 1. Features extraction (GSUB / GPOS)
+  const featureSet = new Set();
+  try {
+    for (const table of [font.tables?.gsub, font.tables?.gpos]) {
+      if (table && Array.isArray(table.features)) {
+        for (const f of table.features) {
+          if (f && typeof f.tag === "string") {
+            const tag = f.tag.trim();
+            if (tag) featureSet.add(tag);
+          }
+        }
+      }
+    }
+  } catch {}
+  const features = Array.from(featureSet).sort();
+
+  // 2. Variable axes extraction (fvar)
+  const axes = [];
+  try {
+    if (font.tables?.fvar && Array.isArray(font.tables.fvar.axes)) {
+      for (const a of font.tables.fvar.axes) {
+        if (!a || !a.tag) continue;
+        const axisName = english(a.name) || standardAxisNames[a.tag] || a.tag;
+        const min = typeof a.minValue === "number" ? a.minValue : 0;
+        const max = typeof a.maxValue === "number" ? a.maxValue : 100;
+        const defaultValue =
+          typeof a.defaultValue === "number" ? a.defaultValue : min;
+        axes.push({
+          tag: a.tag,
+          name: axisName,
+          min: Math.round(min * 100) / 100,
+          max: Math.round(max * 100) / 100,
+          defaultValue: Math.round(defaultValue * 100) / 100,
+        });
+      }
+    }
+  } catch {}
+
+  // 3. Metrics extraction
+  let metrics = null;
+  try {
+    const ext = path.extname(filename || "").replace(/^\./, "").toLowerCase();
+    metrics = {
+      numGlyphs: Number(font.numGlyphs ?? font.glyphs?.length ?? 0),
+      unitsPerEm: Number(font.unitsPerEm ?? 1000),
+      ascender: Number(font.ascender ?? 0),
+      descender: Number(font.descender ?? 0),
+      designer: english(font.names?.designer) || undefined,
+      manufacturer: english(font.names?.manufacturer) || undefined,
+      version: english(font.names?.version) || undefined,
+      format: ext
+        ? ext.toUpperCase()
+        : font.outlinesFormat === "cff"
+          ? "OTF"
+          : "TTF",
+    };
+  } catch {}
+
+  // 4. Sample glyphs extraction (up to 160 printable characters)
+  const printableSet = new Set();
+  try {
+    if (font.glyphs && typeof font.glyphs.length === "number") {
+      const total = font.glyphs.length;
+      for (let i = 0; i < total && printableSet.size < 160; i++) {
+        try {
+          const g = font.glyphs.get(i);
+          if (!g) continue;
+          const codes =
+            Array.isArray(g.unicodes) && g.unicodes.length
+              ? g.unicodes
+              : typeof g.unicode === "number"
+                ? [g.unicode]
+                : [];
+          for (const u of codes) {
+            if (u > 32 && u !== 127 && (u < 0xd800 || u > 0xdfff)) {
+              printableSet.add(String.fromCodePoint(u));
+              if (printableSet.size >= 160) break;
+            }
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+  const sampleGlyphs = Array.from(printableSet);
+
+  return {
+    name,
+    family,
+    groupFamily: family,
+    style,
+    metadata,
+    features,
+    axes,
+    metrics,
+    sampleGlyphs,
+    font,
+  };
 }
 export async function nativeFont(buffer, filename) {
   const ext = path.extname(filename).toLowerCase();
@@ -90,13 +199,20 @@ export async function nativeFont(buffer, filename) {
     ext: raw.toString("ascii", 0, 4) === "OTTO" ? ".otf" : ".ttf",
   };
 }
-export async function walk(root, limit = 12000) {
+export async function walk(root, limit = Infinity) {
   const found = [];
   async function visit(dir) {
-    for (const e of await fs.readdir(dir, { withFileTypes: true })) {
-      if (found.length >= limit)
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch (e) {
+      if (dir === root) throw e;
+      return;
+    }
+    for (const e of entries) {
+      if (Number.isFinite(limit) && found.length >= limit)
         throw new Error(
-          "Cartella troppo grande: seleziona una sottocartella (massimo 12.000 file).",
+          `Cartella troppo grande: seleziona una sottocartella (massimo ${limit.toLocaleString()} file).`,
         );
       if (e.isSymbolicLink() || isJunk(e.name)) continue;
       const full = path.join(dir, e.name);

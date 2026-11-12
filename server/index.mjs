@@ -26,6 +26,7 @@ import {
 } from "./system.mjs";
 
 import { createWorkspaceStore } from "./preferences.mjs";
+import { searchOnlineFonts, downloadOnlineFont } from "./online.mjs";
 
 export async function createBackend(options = {}) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -89,10 +90,10 @@ export async function createBackend(options = {}) {
         .json({ error: "Sessione non valida. Ricarica EasyFonts." });
     next();
   });
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({ limit: "50mb" }));
   const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 80 * 1024 * 1024, files: 40, fields: 0 },
+    limits: { fileSize: 100 * 1024 * 1024 },
   });
   let queue = Promise.resolve();
   const mutate = (fn) => (req, res, next) => {
@@ -114,6 +115,10 @@ export async function createBackend(options = {}) {
     licenses: f.licenses,
     metadata: f.metadata,
     url: `/api/fonts/${f.id}/file`,
+    features: f.features || [],
+    axes: f.axes || [],
+    metrics: f.metrics || null,
+    sampleGlyphs: f.sampleGlyphs || [],
   });
   const getFont = (id) => {
     const f = db.fonts.find((f) => f.id === id);
@@ -134,7 +139,8 @@ export async function createBackend(options = {}) {
       url: `/api/licenses/${filename}`,
     };
   }
-  async function ingest(entries, source = "upload") {
+  async function ingest(entries, source = "upload", options = {}) {
+    const { knownLicenses = [], autoSave = true } = options;
     const docs = entries.filter((e) => isLicense(e.name) && !isJunk(e.name));
     const records = new Map();
     for (const d of docs) {
@@ -144,6 +150,7 @@ export async function createBackend(options = {}) {
       }
       records.set(d, await licenseRecord(d));
     }
+    const allLicenses = [...records.values(), ...knownLicenses];
     const result = [];
     for (const entry of entries.filter(
       (e) =>
@@ -153,23 +160,40 @@ export async function createBackend(options = {}) {
       try {
         const id = hash(entry.buffer),
           existing = db.fonts.find((f) => f.id === id);
-        const parsed = existing?.groupFamily
-          ? existing
-          : await parseFont(entry.buffer, entry.name);
+        const parsed =
+          existing?.groupFamily && existing?.features && existing?.metrics
+            ? existing
+            : await parseFont(entry.buffer, entry.name);
         const dir = path.posix.dirname(entry.name.replaceAll("\\", "/"));
-        const applicable = docs.filter((d) => {
-          const ld = path.posix.dirname(d.name.replaceAll("\\", "/"));
+        const applicable = allLicenses.filter((lic) => {
+          const ld =
+            lic.dir || path.posix.dirname(lic.name.replaceAll("\\", "/"));
           return ld === "." || dir === ld || dir.startsWith(ld + "/");
         });
-        const licenses = applicable.map((d) => records.get(d)).filter(Boolean);
-        const metadata = parsed.metadata;
-        const combined = [metadata, ...licenses.map((l) => l.text)].join("\n");
+        const metadata = parsed.metadata || "";
+        const combined = [metadata, ...applicable.map((l) => l.text)].join("\n");
         const dest = path.join(
           data,
           "fonts",
           id + path.extname(entry.name).toLowerCase(),
         );
         await fs.writeFile(dest, entry.buffer);
+        const df = workspaceStore.preferences.defaultFolder;
+        if (df) {
+          try {
+            const alreadyInDefault =
+              entry.originalPath && inside(df, entry.originalPath);
+            if (!alreadyInDefault) {
+              await fs.mkdir(df, { recursive: true });
+              const syncTarget = path.join(df, path.basename(entry.name));
+              await fs.writeFile(syncTarget, entry.buffer);
+            }
+          } catch (syncErr) {
+            warn.push(
+              `Impossibile sincronizzare ${path.basename(entry.name)} nella cartella predefinita: ${syncErr.message}`,
+            );
+          }
+        }
         const f = existing || {
           id,
           name: parsed.name,
@@ -182,6 +206,10 @@ export async function createBackend(options = {}) {
           protected: false,
           licenses: [],
           category: "unknown",
+          features: parsed.features || [],
+          axes: parsed.axes || [],
+          metrics: parsed.metrics || null,
+          sampleGlyphs: parsed.sampleGlyphs || [],
         };
         f.path = dest;
         f.family = parsed.family;
@@ -189,9 +217,13 @@ export async function createBackend(options = {}) {
         f.groupFamily = parsed.groupFamily;
         f.source = source;
         f.sourcePath = entry.originalPath || f.sourcePath;
+        f.features = parsed.features || f.features || [];
+        f.axes = parsed.axes || f.axes || [];
+        f.metrics = parsed.metrics || f.metrics || null;
+        f.sampleGlyphs = parsed.sampleGlyphs || f.sampleGlyphs || [];
         f.licenses = [
           ...new Map(
-            [...f.licenses, ...licenses].map((l) => [l.id, l]),
+            [...f.licenses, ...applicable].map((l) => [l.id, l]),
           ).values(),
         ];
         f.category = licenseCategory(
@@ -204,15 +236,12 @@ export async function createBackend(options = {}) {
         warn.push(`${path.basename(entry.name)}: ${e.message}`);
       }
     }
-    await save();
+    if (autoSave) await save();
     return result;
   }
   function unzip(buffer, prefix = "") {
     const zip = new AdmZip(buffer);
     const entries = zip.getEntries();
-    if (entries.length > 5000)
-      throw Error("Archivio con troppi elementi (massimo 5.000).");
-    let total = 0;
     const result = [];
     for (const e of entries) {
       if (e.isDirectory || isJunk(e.entryName)) continue;
@@ -223,9 +252,6 @@ export async function createBackend(options = {}) {
         /^[a-z]:/i.test(normalized)
       )
         throw Error("Percorso non sicuro nello ZIP.");
-      total += e.header.size;
-      if (total > 300 * 1024 * 1024 || e.header.size > 80 * 1024 * 1024)
-        throw Error("ZIP troppo grande una volta estratto (massimo 300 MB).");
       if (
         fontExtensions.has(path.extname(normalized).toLowerCase()) ||
         isLicense(normalized)
@@ -246,7 +272,7 @@ export async function createBackend(options = {}) {
   );
   app.post(
     "/api/import",
-    upload.array("files", 40),
+    upload.array("files"),
     mutate(async (req, res) => {
       warn.length = 0;
       let fonts = [];
@@ -275,8 +301,6 @@ export async function createBackend(options = {}) {
       const files = await options.chooseFiles();
       if (!files.length)
         return res.json({ cancelled: true, fonts: [], warnings: [] });
-      if (files.length > 40)
-        throw Error("Seleziona al massimo 40 file alla volta.");
       warn.length = 0;
       let fonts = [];
       for (const file of files) {
@@ -304,30 +328,80 @@ export async function createBackend(options = {}) {
   async function scanFolder(folder) {
     warn.length = 0;
     const files = await walk(folder);
-    const loose = [];
-    let fonts = [];
-    let total = 0;
+    const licensePaths = [];
+    const zipPaths = [];
+    const fontPaths = [];
+
     for (const file of files) {
       const name = path.relative(folder, file).replaceAll("\\", "/");
       const ext = path.extname(file).toLowerCase();
-      if (!(fontExtensions.has(ext) || ext === ".zip" || isLicense(name)))
-        continue;
-      const stat = await fs.stat(file);
-      total += stat.size;
-      if (stat.size > 80 * 1024 * 1024 || total > 500 * 1024 * 1024)
-        throw Error(
-          "La cartella supera il limite di 500 MB. Seleziona una sottocartella.",
-        );
-      const buffer = await fs.readFile(file);
-      if (ext === ".zip") {
-        try {
-          fonts.push(...(await ingest(unzip(buffer), "folder")));
-        } catch (e) {
-          warn.push(`${name}: ${e.message}`);
-        }
-      } else loose.push({ name, buffer, originalPath: file });
+      if (isJunk(name)) continue;
+      if (isLicense(name)) licensePaths.push({ name, file });
+      else if (ext === ".zip") zipPaths.push({ name, file });
+      else if (fontExtensions.has(ext)) fontPaths.push({ name, file });
     }
-    fonts.push(...(await ingest(loose, "folder")));
+
+    const looseLicenseRecords = [];
+    for (const lic of licensePaths) {
+      try {
+        const stat = await fs.stat(lic.file);
+        if (stat.size > 8 * 1024 * 1024) {
+          warn.push(`Licenza troppo grande ignorata: ${lic.name}`);
+          continue;
+        }
+        const buffer = await fs.readFile(lic.file);
+        const record = await licenseRecord({ name: lic.name, buffer });
+        record.dir = path.posix.dirname(lic.name);
+        looseLicenseRecords.push(record);
+      } catch (e) {
+        warn.push(`Impossibile leggere licenza ${lic.name}: ${e.message}`);
+      }
+    }
+
+    const fonts = [];
+
+    for (const zip of zipPaths) {
+      try {
+        const buffer = await fs.readFile(zip.file);
+        const entries = unzip(buffer);
+        const ingested = await ingest(entries, "folder", { autoSave: false });
+        fonts.push(...ingested);
+      } catch (e) {
+        warn.push(`${zip.name}: ${e.message}`);
+      }
+    }
+
+    const CHUNK_SIZE = 50;
+    for (let i = 0; i < fontPaths.length; i += CHUNK_SIZE) {
+      const chunkPaths = fontPaths.slice(i, i + CHUNK_SIZE);
+      const chunkEntries = [];
+      for (const item of chunkPaths) {
+        try {
+          const stat = await fs.stat(item.file);
+          if (stat.size > 80 * 1024 * 1024) {
+            warn.push(`${item.name}: File troppo grande (massimo 80 MB).`);
+            continue;
+          }
+          const buffer = await fs.readFile(item.file);
+          chunkEntries.push({
+            name: item.name,
+            buffer,
+            originalPath: item.file,
+          });
+        } catch (e) {
+          warn.push(`${item.name}: ${e.message}`);
+        }
+      }
+      if (chunkEntries.length > 0) {
+        const ingested = await ingest(chunkEntries, "folder", {
+          knownLicenses: looseLicenseRecords,
+          autoSave: false,
+        });
+        fonts.push(...ingested);
+      }
+    }
+
+    await save();
 
     return {
       fonts: [...new Map(fonts.map((f) => [f.id, f])).values()],
@@ -363,14 +437,22 @@ export async function createBackend(options = {}) {
               source: "system",
               licenses: [],
               category: licenseCategory(parsed.metadata),
+              features: parsed.features || [],
+              axes: parsed.axes || [],
+              metrics: parsed.metrics || null,
+              sampleGlyphs: parsed.sampleGlyphs || [],
             };
             db.fonts.push(f);
           }
-          if (!f.groupFamily) {
+          if (!f.groupFamily || !f.features || !f.metrics) {
             const parsed = await parseFont(buffer, file);
             f.family = parsed.family;
             f.style = parsed.style;
             f.groupFamily = parsed.groupFamily;
+            f.features = parsed.features || [];
+            f.axes = parsed.axes || [];
+            f.metrics = parsed.metrics || null;
+            f.sampleGlyphs = parsed.sampleGlyphs || [];
           }
           f.installedPath = file;
           // All OS-owned locations are read-only; the user-font directory permits cleanup.
@@ -390,6 +472,124 @@ export async function createBackend(options = {}) {
       warnings: [...warn],
     };
   }
+
+  const activeUploads = new Map();
+  const cleanupStaleUploads = () => {
+    const now = Date.now();
+    for (const [id, session] of activeUploads.entries()) {
+      if (now - session.createdAt > 30 * 60 * 1000) activeUploads.delete(id);
+    }
+  };
+
+  app.post(
+    "/api/upload/init",
+    mutate(async (req, res) => {
+      cleanupStaleUploads();
+      const uploadId = crypto.randomUUID();
+      activeUploads.set(uploadId, {
+        uploadId,
+        fonts: [],
+        warnings: [],
+        createdAt: Date.now(),
+        totalFiles: Number(req.body?.totalFiles || 0),
+      });
+      res.json({ uploadId });
+    }),
+  );
+
+  app.post(
+    "/api/upload/chunk",
+    upload.array("files"),
+    mutate(async (req, res) => {
+      const uploadId = req.body?.uploadId;
+      if (!uploadId || !activeUploads.has(uploadId)) {
+        return res
+          .status(404)
+          .json({ error: "Sessione di caricamento non valida o scaduta." });
+      }
+      const session = activeUploads.get(uploadId);
+      session.createdAt = Date.now();
+      const isLast = req.body?.isLast === "true" || req.body?.isLast === true;
+      warn.length = 0;
+      const chunkFonts = [];
+
+      for (const file of req.files || []) {
+        const name = Buffer.from(file.originalname, "latin1").toString("utf8");
+        const ext = path.extname(name).toLowerCase();
+        try {
+          if (ext === ".zip") {
+            chunkFonts.push(
+              ...(await ingest(unzip(file.buffer), "upload", {
+                autoSave: false,
+              })),
+            );
+          } else if (fontExtensions.has(ext)) {
+            chunkFonts.push(
+              ...(await ingest([{ name, buffer: file.buffer }], "upload", {
+                autoSave: false,
+              })),
+            );
+          } else if (isLicense(name)) {
+            await ingest([{ name, buffer: file.buffer }], "upload", {
+              autoSave: false,
+            });
+          } else {
+            warn.push(`Formato ignorato: ${name}`);
+          }
+        } catch (e) {
+          warn.push(`${name}: ${e.message}`);
+        }
+      }
+
+      session.fonts.push(...chunkFonts);
+      session.warnings.push(...warn);
+
+      if (isLast) {
+        await save();
+        const uniqueFonts = [
+          ...new Map(session.fonts.map((f) => [f.id, f])).values(),
+        ];
+        await workspaceStore.remember(uniqueFonts);
+        activeUploads.delete(uploadId);
+        return res.json({
+          fonts: uniqueFonts,
+          warnings: [...new Set(session.warnings)],
+          done: true,
+        });
+      }
+
+      res.json({
+        uploadId,
+        received: req.files?.length || 0,
+        totalSoFar: session.fonts.length,
+        done: false,
+      });
+    }),
+  );
+
+  app.post(
+    "/api/upload/complete",
+    mutate(async (req, res) => {
+      const uploadId = req.body?.uploadId;
+      if (!uploadId || !activeUploads.has(uploadId)) {
+        return res
+          .status(404)
+          .json({ error: "Sessione di caricamento non valida o scaduta." });
+      }
+      const session = activeUploads.get(uploadId);
+      await save();
+      const uniqueFonts = [
+        ...new Map(session.fonts.map((f) => [f.id, f])).values(),
+      ];
+      await workspaceStore.remember(uniqueFonts);
+      activeUploads.delete(uploadId);
+      res.json({
+        fonts: uniqueFonts,
+        warnings: [...new Set(session.warnings)],
+        done: true,
+      });
+    }),
+  );
 
   app.post(
     "/api/folder",
@@ -414,24 +614,137 @@ export async function createBackend(options = {}) {
     "/api/preferences",
     mutate(async (req, res) => res.json(await workspaceStore.update(req.body))),
   );
+  app.get("/api/default-folder", (_req, res) =>
+    res.json({ folder: workspaceStore.preferences.defaultFolder || null }),
+  );
+  app.post(
+    "/api/default-folder",
+    mutate(async (req, res) => {
+      if (req.body?.choose) {
+        const folder = await (options.chooseDirectory || chooseFolder)();
+        if (!folder)
+          return res.json({
+            cancelled: true,
+            folder: workspaceStore.preferences.defaultFolder || null,
+          });
+        await workspaceStore.update({ defaultFolder: folder });
+        return res.json({ folder, ok: true });
+      }
+      if (req.body?.folder === null || req.body?.folder === "") {
+        await workspaceStore.update({ defaultFolder: null });
+        return res.json({ folder: null, ok: true });
+      }
+      if (typeof req.body?.folder === "string") {
+        await fs.mkdir(req.body.folder, { recursive: true }).catch(() => {});
+        await workspaceStore.update({ defaultFolder: req.body.folder });
+        return res.json({ folder: req.body.folder, ok: true });
+      }
+      return res
+        .status(400)
+        .json({ error: "Specifica una cartella valida o choose: true." });
+    }),
+  );
+  const handleOnlineSearch = async (req, res, next) => {
+    try {
+      const query = String(req.query.q ?? req.body?.query ?? req.body?.q ?? "");
+      const source = String(req.query.source ?? req.body?.source ?? "all");
+      const commercialOnly =
+        req.query.commercial === "true" ||
+        req.body?.commercial === true ||
+        req.body?.commercial === "true";
+      const result = await searchOnlineFonts({
+        query,
+        source,
+        commercialOnly,
+      });
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  };
+  app.get("/api/online/search", handleOnlineSearch);
+  app.post("/api/online/search", handleOnlineSearch);
+  app.post(
+    "/api/online/download",
+    mutate(async (req, res) => {
+      const items = req.body?.items;
+      if (!Array.isArray(items) || items.length === 0) {
+        throw Error("Seleziona almeno un font online da scaricare.");
+      }
+      warn.length = 0;
+      const downloadedFonts = [];
+      for (const item of items) {
+        const resDownload = await downloadOnlineFont(
+          item,
+          path.join(root, "sample-fonts-pack.zip"),
+        );
+        if (resDownload.zipBuffer) {
+          const prefix = (item.downloadId || item.id || "font") + "/";
+          downloadedFonts.push(
+            ...(await ingest(unzip(resDownload.zipBuffer, prefix), "upload")),
+          );
+        } else if (resDownload.entries) {
+          downloadedFonts.push(
+            ...(await ingest(resDownload.entries, "upload")),
+          );
+        }
+      }
+
+      const currentWorkspaceIds = new Set(workspaceStore.workspace?.ids || []);
+      const existingFonts = workspaceStore.workspace?.ids
+        ? db.fonts
+            .filter(
+              (f) => currentWorkspaceIds.has(f.id) && f.source !== "archived",
+            )
+            .map(publicFont)
+        : [];
+
+      const mergedMap = new Map();
+      for (const font of existingFonts) {
+        mergedMap.set(font.id, font);
+      }
+      for (const font of downloadedFonts) {
+        mergedMap.set(font.id, font);
+      }
+      const mergedFonts = [...mergedMap.values()];
+
+      await workspaceStore.remember(
+        mergedFonts,
+        "library",
+        workspaceStore.workspace?.folder,
+      );
+
+      res.json({
+        fonts: mergedFonts,
+        added: downloadedFonts,
+        warnings: [...warn],
+      });
+    }),
+  );
   app.post(
     "/api/restore",
     mutate(async (_req, res) => {
       const last = workspaceStore.workspace;
+      const targetFolder =
+        last?.folder || workspaceStore.preferences.defaultFolder;
       let result;
-      if (last?.folder) {
+      if (targetFolder) {
         try {
-          result = await scanFolder(last.folder);
-          await workspaceStore.remember(result.fonts, "library", last.folder);
+          result = await scanFolder(targetFolder);
+          await workspaceStore.remember(result.fonts, "library", targetFolder);
         } catch (error) {
           result = {
             fonts: db.fonts
-              .filter((f) => last.ids.includes(f.id) && f.source !== "archived")
+              .filter(
+                (f) =>
+                  (last?.ids ? last.ids.includes(f.id) : true) &&
+                  f.source !== "archived",
+              )
               .map(publicFont),
             warnings: [
-              `La cartella non è disponibile: ${last.folder}. Uso le copie salvate. ${error.message}`,
+              `La cartella non è disponibile: ${targetFolder}. Uso le copie salvate. ${error.message}`,
             ],
-            folder: last.folder,
+            folder: targetFolder,
           };
         }
       } else if (last?.mode === "system") result = await scanSystem();
@@ -449,7 +762,7 @@ export async function createBackend(options = {}) {
       let updatedFamilies = false;
       for (const record of result.fonts) {
         const font = getFont(record.id);
-        if (!font.groupFamily) {
+        if (!font.groupFamily || !font.features || !font.metrics) {
           try {
             const parsed = await parseFont(
               await fs.readFile(font.path),
@@ -458,6 +771,10 @@ export async function createBackend(options = {}) {
             font.family = parsed.family;
             font.style = parsed.style;
             font.groupFamily = parsed.groupFamily;
+            font.features = parsed.features || [];
+            font.axes = parsed.axes || [];
+            font.metrics = parsed.metrics || null;
+            font.sampleGlyphs = parsed.sampleGlyphs || [];
             updatedFamilies = true;
           } catch {}
         }
@@ -501,11 +818,7 @@ export async function createBackend(options = {}) {
     });
   });
   function requested(req) {
-    if (
-      !Array.isArray(req.body.ids) ||
-      !req.body.ids.length ||
-      req.body.ids.length > 12000
-    )
+    if (!Array.isArray(req.body.ids) || !req.body.ids.length)
       throw Error("Seleziona almeno un font.");
     return [...new Set(req.body.ids)].map(getFont);
   }

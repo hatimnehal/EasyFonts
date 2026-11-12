@@ -114,3 +114,74 @@ test("selettori desktop: import nativo, cartella e annullamento", async () => {
     await fs.rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("preferenze avanzate: nuovi layout preview (waterfall, glyphs, pairing) e defaultFolder", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "easyfonts-prefs-"));
+  const defaultDir = path.join(dataDir, "my-default-fonts");
+  await fs.mkdir(defaultDir, { recursive: true });
+  try {
+    const backend = await createBackend({
+      dataDir,
+      desktop: true,
+      chooseDirectory: async () => defaultDir,
+    });
+    const running = await backend.listen(0);
+    try {
+      const session = await (await fetch(running.url + "/api/session")).json();
+      const headers = {
+        "X-EasyFonts-Token": session.token,
+        "Content-Type": "application/json",
+      };
+
+      for (const layout of ["waterfall", "glyphs", "pairing"]) {
+        const res = await fetch(running.url + "/api/preferences", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ previewLayout: layout }),
+        });
+        assert.equal(
+          res.status,
+          200,
+          `previewLayout ${layout} deve essere accettato`,
+        );
+        const saved = await res.json();
+        assert.equal(saved.previewLayout, layout);
+      }
+
+      const chooseRes = await fetch(running.url + "/api/default-folder", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ choose: true }),
+      });
+      assert.equal(chooseRes.status, 200);
+      const chooseData = await chooseRes.json();
+      assert.equal(chooseData.folder, defaultDir);
+      assert.equal(chooseData.ok, true);
+
+      const getRes = await fetch(running.url + "/api/default-folder");
+      assert.equal(getRes.status, 200);
+      const getData = await getRes.json();
+      assert.equal(getData.folder, defaultDir);
+
+      const extraPrefs = {
+        favorites: ["abc123def456"],
+        onboardingCompleted: true,
+        defaultFolder: defaultDir,
+      };
+      const extraRes = await fetch(running.url + "/api/preferences", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(extraPrefs),
+      });
+      assert.equal(extraRes.status, 200);
+      const extraSaved = await extraRes.json();
+      assert.deepEqual(extraSaved.favorites, ["abc123def456"]);
+      assert.equal(extraSaved.onboardingCompleted, true);
+      assert.equal(extraSaved.defaultFolder, defaultDir);
+    } finally {
+      await running.close();
+    }
+  } finally {
+    await fs.rm(dataDir, { recursive: true, force: true });
+  }
+});

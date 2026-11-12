@@ -42,6 +42,35 @@ test("API locale: import ZIP, licenze, protezioni, eliminazione recuperabile e r
       headers: { Origin: "https://other.example" },
     });
     assert.equal(r.status, 403);
+
+    // Test default-folder endpoint before import
+    const initialDefault = await (await fetch(base + "/default-folder")).json();
+    assert.equal(initialDefault.folder, null);
+
+    const syncTargetDir = path.join(data, "synced-fonts");
+    const unauthDefault = await fetch(base + "/default-folder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder: syncTargetDir }),
+    });
+    assert.equal(unauthDefault.status, 403);
+
+    const setDefault = await fetch(base + "/default-folder", {
+      method: "POST",
+      headers: {
+        "X-EasyFonts-Token": token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ folder: syncTargetDir }),
+    });
+    assert.equal(setDefault.status, 200);
+    const setDefaultRes = await setDefault.json();
+    assert.equal(setDefaultRes.folder, syncTargetDir);
+    assert.equal(setDefaultRes.ok, true);
+
+    const currentDefault = await (await fetch(base + "/default-folder")).json();
+    assert.equal(currentDefault.folder, syncTargetDir);
+
     const form = new FormData();
     form.append(
       "files",
@@ -64,8 +93,58 @@ test("API locale: import ZIP, licenze, protezioni, eliminazione recuperabile e r
       assert.ok(
         f.licenses.some((l) => l.text.includes("SIL OPEN FONT LICENSE")),
       );
+      assert.ok(Array.isArray(f.features), "features deve essere un array");
+      assert.ok(Array.isArray(f.axes), "axes deve essere un array");
+      assert.ok(
+        f.metrics && typeof f.metrics === "object",
+        "metrics deve essere un oggetto",
+      );
+      assert.ok(
+        Array.isArray(f.sampleGlyphs),
+        "sampleGlyphs deve essere un array",
+      );
       assert.ok((await fetch(`http://127.0.0.1:${port}${f.url}`)).ok);
     }
+
+    // Verify auto-sync to default folder
+    const syncedFiles = await fs.readdir(syncTargetDir);
+    assert.ok(
+      syncedFiles.length > 0,
+      "I font importati devono essere sincronizzati nella cartella predefinita",
+    );
+
+    // Verify chunked upload API
+    const initRes = await fetch(base + "/upload/init", {
+      method: "POST",
+      headers: {
+        "X-EasyFonts-Token": token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ totalFiles: 1 }),
+    });
+    assert.equal(initRes.status, 200);
+    const { uploadId } = await initRes.json();
+    assert.ok(uploadId);
+
+    const chunkForm = new FormData();
+    chunkForm.append("uploadId", uploadId);
+    chunkForm.append("isLast", "true");
+    chunkForm.append(
+      "files",
+      new Blob([
+        await fs.readFile(new URL("../sample-fonts-pack.zip", import.meta.url)),
+      ]),
+      "sample-chunk.zip",
+    );
+    const chunkRes = await fetch(base + "/upload/chunk", {
+      method: "POST",
+      headers: { "X-EasyFonts-Token": token },
+      body: chunkForm,
+    });
+    assert.equal(chunkRes.status, 200);
+    const chunkData = await chunkRes.json();
+    assert.equal(chunkData.done, true);
+    assert.ok(chunkData.fonts.length > 0);
     const id = imported.fonts[0].id;
     r = await fetch(base + "/delete", {
       method: "POST",

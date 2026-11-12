@@ -1,6 +1,8 @@
 import { Maximize2 } from "lucide-react";
 import type { FontItem } from "../types";
+import type { TypographySettings } from "../preferences";
 import { useSpecimenText } from "../previewText";
+
 export function Preview({
   font,
   negative = false,
@@ -10,6 +12,7 @@ export function Preview({
   ready,
   variants = [],
   onVariantChange,
+  typography,
 }: {
   font?: FontItem;
   negative?: boolean;
@@ -19,14 +22,29 @@ export function Preview({
   ready: boolean;
   variants?: FontItem[];
   onVariantChange?: (id: string) => void;
+  typography?: TypographySettings;
 }) {
   const { text, setText } = useSpecimenText(font, negative);
+  const featureSettings =
+    typography?.activeFeatures && typography.activeFeatures.length > 0
+      ? typography.activeFeatures.map((tag) => `"${tag}" 1`).join(", ")
+      : undefined;
+  const variationSettings =
+    typography?.axisValues && Object.keys(typography.axisValues).length > 0
+      ? Object.entries(typography.axisValues)
+          .map(([tag, val]) => `"${tag}" ${val}`)
+          .join(", ")
+      : undefined;
+
   return (
     <section
       className={`preview ${negative ? "negative" : "positive"} ${expanded ? "expanded-preview" : ""}`}
     >
       <div className="preview-top">
-        <span>{negative ? "p. neg." : "p. posit."}</span>
+        <span>
+          {negative ? "p. neg." : "p. posit."}
+          {font?.axes && font.axes.length > 0 ? " · VAR" : ""}
+        </span>
         {font && variants.length > 1 && onVariantChange ? (
           <select
             className="preview-variant"
@@ -58,6 +76,18 @@ export function Preview({
         style={{
           fontFamily: font && ready ? `"ef-${font.id}"` : "sans-serif",
           fontSize: size,
+          letterSpacing:
+            typography?.tracking !== undefined
+              ? `${typography.tracking}em`
+              : undefined,
+          lineHeight: typography?.lineHeight ?? undefined,
+          textAlign: typography?.align || undefined,
+          textTransform:
+            typography?.transform && typography.transform !== "none"
+              ? typography.transform
+              : undefined,
+          fontFeatureSettings: featureSettings,
+          fontVariationSettings: variationSettings,
           opacity: ready ? 1 : 0.4,
         }}
       />
